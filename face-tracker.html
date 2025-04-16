@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Face Tracker</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: #0a0a0a;
+      font-family: 'Roboto Mono', monospace;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      color: #e0e0e0;
+    }
+    .tracker-container {
+      position: relative;
+      width: 90%;
+      max-width: 800px;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .video-feed {
+      display: block;
+      width: 100%;
+      transform: scaleX(-1);
+    }
+    .tracker-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      transform: scaleX(-1);
+    }
+    .status-bar {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      padding: 8px 16px;
+      background: rgba(0,0,0,0.8);
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #4fc3f7;
+    }
+  </style>
+</head>
+<body>
+  <div class="tracker-container">
+    <video class="video-feed" width="800" height="600" playsinline></video>
+    <canvas class="tracker-overlay" width="800" height="600"></canvas>
+    <div class="status-bar">
+      <span id="status">Initializing biometric tracker...</span>
+      <span id="fps">0ms</span>
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+  <script>
+    const video = document.querySelector('.video-feed');
+    const canvas = document.querySelector('.tracker-overlay');
+    const ctx = canvas.getContext('2d');
+    const status = document.getElementById('status');
+    const fpsDisplay = document.getElementById('fps');
+    const precisionBtn = document.getElementById('precision');
+    let faceMesh;
+    let camera;
+    let isRunning = true;
+    let lastFrameTime = performance.now();
+    let frameTimes = [];
+    let highPrecision = false;
+    let frameCount = 0;
+    const symmetricalConnections = [
+      [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234],
+      [70, 63, 105, 66, 107, 55, 65, 52, 53, 46, 336, 296, 334, 293, 300, 276, 283, 282, 295, 285],
+      [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7, 362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382],
+      [168, 6, 197, 195, 5, 4, 1, 19, 94, 2, 164, 0],
+      [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146, 78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178]
+    ];
+    function initTracker() {
+      faceMesh = new FaceMesh({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+      });
+      faceMesh.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: highPrecision,
+        minDetectionConfidence: 0.8,
+        minTrackingConfidence: 0.7,
+        staticImageMode: false
+      });
+      faceMesh.onResults(processFaceData);
+    }
+    function processFaceData(results) {
+      const startTime = performance.now();
+      if (!isRunning) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+        const landmarks = results.multiFaceLandmarks[0];
+        ctx.strokeStyle = highPrecision ? 'rgba(79, 195, 247, 0.7)' : 'rgba(79, 195, 247, 0.5)';
+        ctx.lineWidth = highPrecision ? 1.2 : 0.8;
+        for (const connectionGroup of symmetricalConnections) {
+          ctx.beginPath();
+          for (let i = 0; i < connectionGroup.length; i++) {
+            const point = landmarks[connectionGroup[i]];
+            const x = point.x * canvas.width;
+            const y = point.y * canvas.height;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        }
+        const pointSize = highPrecision ? 2.5 : 1.8;
+        for (let i = 0; i < landmarks.length; i++) {
+          const point = landmarks[i];
+          const x = point.x * canvas.width;
+          const y = point.y * canvas.height;
+          ctx.fillStyle = getSymmetricalColor(i);
+          ctx.beginPath();
+          ctx.arc(x, y, pointSize, 0, 2 * Math.PI);
+          ctx.fill();
+        }
+        status.textContent = `Tracking Active | ${landmarks.length} Points`;
+      } else {
+        status.textContent = "Searching for Face...";
+      }
+      const processTime = performance.now() - startTime;
+      frameTimes.push(processTime);
+      frameCount++;
+      if (frameCount % 10 === 0) {
+        const avgTime = frameTimes.reduce((a,b) => a + b, 0) / frameTimes.length;
+        fpsDisplay.textContent = `${avgTime.toFixed(1)}ms`;
+        frameTimes = [];
+      }
+      if (isRunning) {
+        requestAnimationFrame(() => {
+          if (faceMesh) faceMesh.send({image: video});
+        });
+      }
+    }
+    function getSymmetricalColor(index) {
+      if (index >= 0 && index <= 16) return 'rgba(255, 83, 73, 0.8)';
+      if (index >= 17 && index <= 26) return 'rgba(255, 193, 7, 0.8)';
+      if (index >= 27 && index <= 45) return 'rgba(255, 193, 7, 0.8)';
+      if (index >= 46 && index <= 94) return 'rgba(100, 221, 23, 0.8)';
+      if (index >= 95 && index <= 150) return 'rgba(3, 169, 244, 0.8)';
+      if (index >= 151 && index <= 250) return 'rgba(156, 39, 176, 0.8)';
+      return 'rgba(255, 255, 255, 0.6)';
+    }
+    async function startTracking() {
+      try {
+        initTracker();
+        camera = new Camera(video, {
+          onFrame: async () => {
+            if (isRunning && faceMesh) {
+              await faceMesh.send({image: video});
+            }
+          },
+          width: 800,
+          height: 600
+        });
+        await camera.start();
+        status.textContent = "Tracker Active";
+      } catch (err) {
+        console.error("Tracker error:", err);
+        status.textContent = `System Error: ${err.message}`;
+      }
+    }
+    function stopTracking() {
+      isRunning = false;
+      if (camera) camera.stop();
+      if (faceMesh) faceMesh.close();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    startTracking();
+    window.addEventListener('beforeunload', stopTracking);
+  </script>
+</body>
+</html>
